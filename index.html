@@ -5,8 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Cost Scanner</title>
   <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.19.1/umd/index.min.js"></script>
+  <script src="https://unpkg.com/@zxing/library@latest"></script>
   <link href="https://fonts.googleapis.com/css2?family=Prompt:wght@300;400;600&display=swap" rel="stylesheet">
+
   <style>
     body { background-color: #000; margin: 0; display: flex; flex-direction: column; height: 100vh; font-family: 'Prompt', sans-serif; overflow: hidden; }
     
@@ -18,12 +19,12 @@
     #video-container { flex: 1; position: relative; display: flex; align-items: center; justify-content: center; background: #000; }
     video { width: 100%; height: 100%; object-fit: cover; }
 
-    /* Overlay & Scan Line */
+    /* Scan Frame */
     .scan-frame {
-        position: absolute; width: 80%; height: 100px;
+        position: absolute; width: 80%; height: 120px;
         border: 2px solid rgba(255, 255, 255, 0.8);
         border-radius: 12px;
-        box-shadow: 0 0 0 4000px rgba(0, 0, 0, 0.6); /* ฉากมืด */
+        box-shadow: 0 0 0 4000px rgba(0, 0, 0, 0.6);
         z-index: 10; pointer-events: none;
     }
     .laser {
@@ -32,17 +33,20 @@
         position: absolute; top: 50%;
         animation: scan 2s infinite;
     }
-    @keyframes scan { 0% { transform: translateY(-40px); opacity: 0.5; } 50% { transform: translateY(40px); opacity: 1; } 100% { transform: translateY(-40px); opacity: 0.5; } }
+    @keyframes scan { 0% { transform: translateY(-50px); opacity: 0.5; } 50% { transform: translateY(50px); opacity: 1; } 100% { transform: translateY(-50px); opacity: 0.5; } }
     
-    .guide-text { position: absolute; bottom: -40px; width: 100%; text-align: center; color: #fff; font-size: 14px; }
+    .guide-text { position: absolute; bottom: -30px; width: 100%; text-align: center; color: #fff; font-size: 14px; }
 
     /* Status Bar */
     .status-bar {
         background: #fff; padding: 20px; text-align: center;
-        border-radius: 20px 20px 0 0; z-index: 20;
+        border-radius: 20px 20px 0 0; z-index: 20; min-height: 80px;
+        display: flex; flex-direction: column; justify-content: center; align-items: center;
     }
-    #status { font-size: 16px; color: #333; font-weight: 600; margin-bottom: 10px; }
-    .btn-retry { background: #333; color: white; border: none; padding: 8px 20px; border-radius: 20px; display: none; }
+    #status { font-size: 16px; color: #333; font-weight: 600; margin-bottom: 5px; }
+    #debug-info { font-size: 12px; color: #999; margin-bottom: 10px; }
+    
+    button { background: #333; color: white; border: none; padding: 10px 25px; border-radius: 50px; font-size: 14px; cursor: pointer; display: none; }
   </style>
 </head>
 <body>
@@ -54,71 +58,121 @@
   <div id="video-container">
     <div class="scan-frame">
         <div class="laser"></div>
-        <div class="guide-text">สแกนบาร์โค้ด</div>
+        <div class="guide-text">เล็งบาร์โค้ด</div>
     </div>
     <video id="video" autoplay muted playsinline></video>
   </div>
 
   <div class="status-bar">
-    <div id="status">กำลังเปิดกล้อง...</div>
-    <button class="btn-retry" onclick="location.reload()">ลองใหม่</button>
+    <div id="status">กำลังโหลดระบบ...</div>
+    <div id="debug-info">Init...</div>
+    <button id="retryBtn" onclick="location.reload()">รีโหลด</button>
   </div>
 
   <script>
     const LIFF_ID = "2008552223-7BjGxV6G"; 
-    let codeReader = new ZXing.BrowserBarcodeReader();
+    let codeReader;
+    let selectedDeviceId;
 
     async function main() {
       try {
+        log("Start LIFF Init...");
         await liff.init({ liffId: LIFF_ID });
-        if (!liff.isLoggedIn()) liff.login();
-        startScan();
+        log("LIFF OK. Checking Login...");
+        
+        if (!liff.isLoggedIn()) {
+           log("Not logged in. Redirecting...");
+           liff.login();
+           return;
+        }
+        
+        startCamera();
       } catch (err) {
         showError("LIFF Error: " + err);
       }
     }
 
-    function startScan() {
-      // ใช้ Constraints บังคับเปิดกล้องหลัง (Environment) ทันที วิธีนี้เสถียรที่สุด
-      codeReader.decodeFromConstraints(
-        { video: { facingMode: "environment" } }, 
-        'video', 
-        (result, err) => {
-          if (result) {
-            playSound();
-            document.getElementById('status').innerText = "✅ พบข้อมูล: " + result.text;
-            document.getElementById('status').style.color = "green";
-            
-            if (liff.isInClient()) {
-              liff.sendMessages([{ type: 'text', text: result.text }])
-                .then(() => liff.closeWindow())
-                .catch(e => showError("ส่งข้อมูลไม่สำเร็จ"));
-            } else {
-              alert("Result: " + result.text);
-            }
-            codeReader.reset();
-          }
+    async function startCamera() {
+      try {
+        log("Loading ZXing...");
+        codeReader = new ZXing.BrowserBarcodeReader();
+        
+        log("Listing Cameras...");
+        const videoInputDevices = await codeReader.listVideoInputDevices();
+        
+        if (videoInputDevices.length === 0) {
+            throw "ไม่พบกล้องในอุปกรณ์นี้";
         }
-      ).catch(err => {
-        showError("เปิดกล้องไม่ได้: " + err);
-        document.querySelector('.btn-retry').style.display = 'inline-block';
-      });
+
+        // Logic เลือกกล้องหลัง (Back/Rear) ที่ดีที่สุด
+        selectedDeviceId = videoInputDevices[0].deviceId; // Default
+        for (const device of videoInputDevices) {
+            const label = device.label.toLowerCase();
+            // พยายามหากล้องหลัง ที่ไม่ใช่เลนส์ Wide
+            if ((label.includes('back') || label.includes('rear')) && 
+                !label.includes('wide') && !label.includes('0.5')) {
+                selectedDeviceId = device.deviceId;
+                break; // เจอแล้วหยุดเลย
+            }
+        }
+
+        log("Camera found. Starting decode...");
+        decodeOnce();
+
+      } catch (err) {
+        showError("Camera Error: " + err);
+      }
+    }
+
+    function decodeOnce() {
+        document.getElementById('status').innerText = "📷 เล็งบาร์โค้ดได้เลย";
+        
+        codeReader.decodeFromVideoDevice(selectedDeviceId, 'video', (result, err) => {
+            if (result) {
+                playSound();
+                document.getElementById('status').innerText = "✅ เจอรหัส: " + result.text;
+                document.getElementById('status').style.color = "green";
+                
+                // หยุดกล้องชั่วคราวกันสแกนซ้ำ
+                codeReader.reset();
+
+                if (liff.isInClient()) {
+                    liff.sendMessages([{ type: 'text', text: result.text }])
+                        .then(() => liff.closeWindow())
+                        .catch(e => showError("ส่งไลน์ไม่ผ่าน: " + e));
+                } else {
+                    alert("ผลการสแกน: " + result.text);
+                    setTimeout(() => decodeOnce(), 2000); // เทสบนคอมให้เริ่มใหม่
+                }
+            }
+            // Note: ZXing throws lots of "NotFoundException" while scanning empty space, ignore them.
+        }).catch(err => {
+             showError("Decode Error: " + err);
+        });
     }
 
     function showError(msg) {
-      document.getElementById('status').innerText = msg;
+      document.getElementById('status').innerText = "เกิดข้อผิดพลาด";
       document.getElementById('status').style.color = "red";
+      document.getElementById('debug-info').innerText = msg;
+      document.getElementById('retryBtn').style.display = 'inline-block';
+    }
+
+    function log(msg) {
+        console.log(msg);
+        document.getElementById('debug-info').innerText = msg;
     }
 
     function playSound() {
-      const ctx = new (window.AudioContext || window.webkitAudioContext)();
-      const osc = ctx.createOscillator();
-      const g = ctx.createGain();
-      osc.connect(g); g.connect(ctx.destination);
-      osc.frequency.value = 1000; g.gain.value = 0.1;
-      osc.start(); setTimeout(() => osc.stop(), 100);
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const osc = ctx.createOscillator();
+        const g = ctx.createGain();
+        osc.connect(g); g.connect(ctx.destination);
+        osc.frequency.value = 1200; g.gain.value = 0.1;
+        osc.start(); setTimeout(() => osc.stop(), 100);
     }
 
+    // เริ่มทำงาน
     main();
   </script>
 </body>
